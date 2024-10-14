@@ -71,21 +71,32 @@ repast::Point<double> origin(0,0);
 	processDims.push_back(procY);
 	discreteSpace = new repast::SharedDiscreteSpace<Agent, repast::StrictBorders, repast::SimpleAdder<Agent> >("AgentDiscreteSpace", gd, processDims, bufferSize, comm);
 	
-	printf("Rank %d. Bounds (global): (%.1f,%.1f) & (%.1f,%.1f). Dimensions (local): (%.1f,%.1f) & (%.1f,%.1f).\n",
+	/*printf("Rank %d. Bounds (global): (%.1f,%.1f) & (%.1f,%.1f). Dimensions (local): (%.1f,%.1f) & (%.1f,%.1f).\n",
 		repast::RepastProcess::instance()->rank(),
 		discreteSpace->bounds().origin().getX(),  discreteSpace->bounds().origin().getY(),
 		discreteSpace->bounds().extents().getX(), discreteSpace->bounds().extents().getY(),
 		discreteSpace->dimensions().origin().getX(),  discreteSpace->dimensions().origin().getY(),
 		discreteSpace->dimensions().extents().getX(), discreteSpace->dimensions().extents().getY()
-	);
+	);*/
 
 	context.addProjection(discreteSpace);
 
 	provider = new AgentPackageProvider(&context);
 	receiver = new AgentPackageReceiver(&context);
+// Data collection
+	// Create the data set builder
+	std::string fileOutputName("./outputs/agent_total_data.csv");
+	repast::SVDataSetBuilder builder(fileOutputName.c_str(), ",", repast::RepastProcess::instance()->getScheduleRunner().schedule());
+
+	// Create the individual data sets to be added to the builder
+	DataSource_AgentSatisfiedTotals* agentSatisfiedTotals_DataSource = new DataSource_AgentSatisfiedTotals(&context);
+	builder.addDataSource(createSVDataSource("Total Satisfied", agentSatisfiedTotals_DataSource, std::plus<int>()));
 
 
+	// Use the builder to create the data set
+	agentValues = builder.createDataSet();
 }
+
 
 SchellingModel::~SchellingModel(){
 	delete props;
@@ -97,9 +108,7 @@ SchellingModel::~SchellingModel(){
 }
 
 
-
-	void SchellingModel::initAgents()
-	{
+void SchellingModel::initAgents(){
 	int rank = repast::RepastProcess::instance()->rank();
 	//repast::IntUniformGenerator gen = repast::Random::instance()->createUniIntGenerator(1, boardSize);
 	int xMin = ceil(discreteSpace->dimensions().origin().getX());
@@ -113,8 +122,7 @@ SchellingModel::~SchellingModel(){
 
 	double threshold = repast::strToDouble(props->getProperty("threshold"));
 	int x, y;
-		for(int i = 0; i < countOfAgents; i++) 
-		{
+	for(int i = 0; i < countOfAgents; i++) {
 		if (i==0 && rank==0) {
 			x=1; y=2;
 		} else if (i==0 && rank==1) {
@@ -125,7 +133,7 @@ SchellingModel::~SchellingModel(){
 			x=5; y=5;
 		}
 		repast::Point<int> initialLocation(x, y);
-		
+
 		repast::AgentId id(i, rank, 0);
 		id.currentRank(rank);
 		Agent* agent = new Agent(id, 0, threshold);
@@ -138,6 +146,19 @@ SchellingModel::~SchellingModel(){
 		discreteSpace->getLocation(id, agentLoc);
 		//printf("Init: Agent %d,%d,%d - at (%d,%d).\n", id.id(), id.startingRank(), id.currentRank(), agentLoc[0], agentLoc[1]);
 	}
+}
+
+
+DataSource_AgentSatisfiedTotals::DataSource_AgentSatisfiedTotals(repast::SharedContext<Agent>* c) : context(c){ }
+int DataSource_AgentSatisfiedTotals::getData(){
+	int sum = 0;
+	repast::SharedContext<Agent>::const_local_iterator iter	= context->localBegin();
+	repast::SharedContext<Agent>::const_local_iterator iterEnd = context->localEnd();
+	while( iter != iterEnd) {
+		sum+= (*iter)->getSatisfiedStatus();
+		iter++;
+	}
+	return sum;
 }
 
 
@@ -178,35 +199,69 @@ SchellingModel::~SchellingModel(){
 	*/
 
 
-/*void SchellingModel::doPerTick(){
-	
-//calculate avg satisfaction
-	double avgSatisfied = 0;
-	std::vector<Agent*> agents;
-	context.selectAgents(repast::SharedContext<Agent>::LOCAL, countOfAgents, agents);
-	std::vector<Agent*>::iterator it = agents.begin();
-	while(it != agents.end()){
-		(*it)->updateStatus(&context, discreteSpace);
-		avgSatisfied += (*it)->getSatisfiedStatus();
-		it++;
+void SchellingModel::doPerTick(){
+	//marks the agents that have moved into the buffer zones to be moved to the adjacent processes.
+	discreteSpace->balance();
+	//agents that had moved out of the local boundaries of one process are moved to the appropriate adjacent process.
+	repast::RepastProcess::instance()->synchronizeAgentStatus<Agent, AgentPackage, AgentPackageProvider, AgentPackageReceiver>(context, *provider, *receiver, *receiver);
+	//copy the agents within the local boundaries but inside some other process's buffer zone so that these agents are visible on the other processes.
+	repast::RepastProcess::instance()->synchronizeProjectionInfo<Agent, AgentPackage, AgentPackageProvider, AgentPackageReceiver>(context, *provider, *receiver, *receiver);
+	//a final update of all non-local agents so that they have the correct, current state of the local originals
+	repast::RepastProcess::instance()->synchronizeAgentStates<AgentPackage, AgentPackageProvider, AgentPackageReceiver>(*provider, *receiver);
+	int rank = repast::RepastProcess::instance()->rank();
+	double currentTick = repast::RepastProcess::instance()->getScheduleRunner().currentTick();
+
+
+	if (rank==0 || rank==1) {
+		printf("Tick %.1f - Rank %d - LOCAL\n", currentTick, rank);
+		repast::SharedContext<Agent>::const_state_aware_iterator local_agents_iter = context.begin(repast::SharedContext<Agent>::LOCAL);
+		repast::SharedContext<Agent>::const_state_aware_iterator local_agents_end  = context.end(repast::SharedContext<Agent>::LOCAL);
+		while(local_agents_iter != local_agents_end){
+			Agent* agent = (&**local_agents_iter);
+			repast::AgentId agentId = agent->getId();
+			std::vector<int> agentLoc;
+			discreteSpace->getLocation(agentId, agentLoc);
+			printf("Agent %d,%d,%d - at (%d,%d) - satisfied %d.\n",	agentId.id(), agentId.startingRank(), agentId.currentRank(), agentLoc[0], agentLoc[1], agent->getSatisfiedStatus());
+			local_agents_iter++;
+		}
+
+		printf("Tick %.1f - Rank %d - NON_LOCAL\n", currentTick, rank);
+		repast::SharedContext<Agent>::const_state_aware_iterator non_local_agents_iter = context.begin(repast::SharedContext<Agent>::NON_LOCAL);
+		repast::SharedContext<Agent>::const_state_aware_iterator non_local_agents_end  = context.end(repast::SharedContext<Agent>::NON_LOCAL);
+		while(non_local_agents_iter != non_local_agents_end){
+			Agent* agent = (&**non_local_agents_iter);
+			repast::AgentId agentId = agent->getId();
+			std::vector<int> agentLoc;
+			discreteSpace->getLocation(agentId, agentLoc);
+			printf("Agent %d,%d,%d - at (%d,%d) - satisfied %d.\n", agentId.id(), agentId.startingRank(), agentId.currentRank(), agentLoc[0], agentLoc[1], agent->getSatisfiedStatus());
+			non_local_agents_iter++;
+		}
 	}
-	avgSatisfied /= countOfAgents;
+		/*if (currentTick==1 && rank==1) {
+		repast::AgentId id(0, 1, 0); //id=0, rank=1, type=0 (default)
+		Agent* agent = context.getAgent(id);
+		agent->set(rank,0, 1); //same rank, same type, change satisfied 0 to 1
+	}*/
 
 
-
-	//agents move to a random location if unsatisfied
-	it = agents.begin();
-	while(it != agents.end()){
-		if (!(*it)->getSatisfiedStatus())
-			(*it)->move(discreteSpace);
-		it++;
+	if (currentTick==1 && rank==0) {
+		repast::AgentId id(0, 0, 0); //id=0, rank=0, type=0 (default)
+		std::vector<int> agentNewLoc;
+		agentNewLoc.push_back(0);
+		agentNewLoc.push_back(3);
+		discreteSpace->moveTo(id,agentNewLoc); //move agent 0 in rank 0 to (0,3)
 	}
-	
 
-}*/
 
-void SchellingModel::initSchedule (repast::ScheduleRunner& runner)
-{
+}
+
+
+void SchellingModel::initSchedule(repast::ScheduleRunner& runner){
 	runner.scheduleEvent(1, 1, repast::Schedule::FunctorPtr(new repast::MethodFunctor<SchellingModel> (this, &SchellingModel::doPerTick)));
 	runner.scheduleStop(stopAt);
+
+	// Data collection
+	runner.scheduleEvent(0, 1, repast::Schedule::FunctorPtr(new repast::MethodFunctor<repast::DataSet>(agentValues, &repast::DataSet::record)));
+	runner.scheduleEvent(1, 1, repast::Schedule::FunctorPtr(new repast::MethodFunctor<repast::DataSet>(agentValues, &repast::DataSet::write)));
+	runner.scheduleEndEvent(repast::Schedule::FunctorPtr(new repast::MethodFunctor<repast::DataSet>(agentValues, &repast::DataSet::write)));
 }

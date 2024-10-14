@@ -1,5 +1,5 @@
 random.seed = 1
-stop.at = 1
+stop.at = 2
 count.of.agents = 1
 threshold = 0.3
 

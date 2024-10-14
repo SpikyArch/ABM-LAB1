@@ -8,8 +8,8 @@
 #include "repast_hpc/SharedDiscreteSpace.h"
 #include "repast_hpc/GridComponents.h"
 #include "repast_hpc/AgentRequest.h"
-
-
+#include "repast_hpc/TDataSource.h"
+#include "repast_hpc/SVDataSet.h"
 #include "Agent.h"
 
 
@@ -48,6 +48,15 @@ public:
 	
 };
 
+/* Data Collection */
+class DataSource_AgentSatisfiedTotals : public repast::TDataSource<int>{
+private:
+	repast::SharedContext<Agent>* context;
+
+public:
+	DataSource_AgentSatisfiedTotals(repast::SharedContext<Agent>* c);
+	int getData();
+};
 
 
 class SchellingModel{
@@ -63,6 +72,7 @@ private:
 	
 	AgentPackageReceiver* receiver;
 
+	repast::SVDataSet* agentValues;
 public:
 	SchellingModel(std::string propsFile, int argc, char** argv, boost::mpi::communicator* comm);
 	~SchellingModel();
